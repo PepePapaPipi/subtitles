@@ -256,7 +256,7 @@ All the subtitle logic, independent of the web layer:
 | Piece | Technology | Why |
 |---|---|---|
 | Language | **Python 3.11** | Whisper and the web server are Python. |
-| Web framework | **FastAPI** | Small, fast, typed request validation, automatic API docs at `/docs`. |
+| Web framework | **FastAPI** | Small, fast, typed request validation, automatic REST API docs (Swagger UI at `/docs`, see [Interactive documentation](#interactive-documentation-swagger-ui)). |
 | Web server | **Uvicorn** | Standard server for FastAPI. |
 | File uploads | **python-multipart** | Lets FastAPI receive uploaded files. |
 | Speech recognition | **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** | Open-source re-implementation of OpenAI's Whisper. Runs locally, about 4× faster than the original, with no API key. Models are downloaded for free from Hugging Face. |
@@ -433,7 +433,7 @@ To back up your work, copy the `data/` folder. To free space, delete videos from
 
 ## HTTP API
 
-The frontend uses these endpoints. FastAPI also shows interactive documentation at <http://localhost:8000/docs>.
+The frontend uses these endpoints. You can also call them yourself, from a script or from the interactive Swagger page described below.
 
 | Method | Path | What it does |
 |---|---|---|
@@ -456,6 +456,44 @@ Example with `curl`:
 ```bash
 curl -F "file=@my-video.mp4" -F "text=@script.txt" -F "language=es" http://localhost:8000/api/jobs
 ```
+
+### Interactive documentation (Swagger UI)
+
+FastAPI builds the API documentation automatically from the code, so it is always up to date. With the app running, open:
+
+| URL | What you get |
+|---|---|
+| <http://localhost:8000/docs> | **Swagger UI**: every endpoint with its parameters, and a **Try it out** button to call it from the browser. |
+| <http://localhost:8000/redoc> | **ReDoc**: the same documentation as one long, easy-to-read page. |
+| <http://localhost:8000/openapi.json> | The **OpenAPI** specification (JSON) that both pages are built from. |
+
+```mermaid
+flowchart LR
+    Code["app/main.py<br/>routes, type hints, docstrings"] --> FastAPI
+    FastAPI --> Spec["/openapi.json<br/>OpenAPI specification"]
+    Spec --> Swagger["/docs<br/>Swagger UI"]
+    Spec --> ReDoc["/redoc<br/>ReDoc"]
+    Spec --> Tools["Other tools<br/>(Postman, Insomnia, client generators)"]
+```
+
+**Trying an endpoint in Swagger UI:**
+
+1. Open <http://localhost:8000/docs> and click an endpoint, for example `GET /api/jobs`.
+2. Click **Try it out**, fill in the parameters (for `POST /api/jobs`, choose a video file), and click **Execute**.
+3. The page shows the request it sent (also as a `curl` command), the response code and the JSON returned. Jobs you create here appear in the app like any other upload.
+
+Where the documentation comes from:
+
+- The **paths and HTTP methods** come from the `@app.get(...)`, `@app.post(...)`, `@app.put(...)` and `@app.delete(...)` decorators.
+- The **parameters** come from the function arguments: `File(...)` and `Form(...)` become form fields, `burn: bool = False` becomes the `?burn=` query parameter, and the `CueIn` Pydantic model describes the JSON body of `PUT /cues`.
+- The **descriptions** come from each function's docstring.
+- The page title is the `title` given to `FastAPI(title="Subtitles")`.
+
+Good to know:
+
+- Swagger UI and ReDoc load their scripts and styles from a CDN (`cdn.jsdelivr.net`), so these pages need an internet connection. The API itself works offline.
+- To use the API from another tool, import `http://localhost:8000/openapi.json` into Postman or Insomnia, or generate a client library from it with [OpenAPI Generator](https://openapi-generator.tech/).
+- The documentation pages are public to anyone who can reach the app. That is fine on your own laptop. If the app is ever hosted for others, see the security notes in [Next steps: deployment](#next-steps-deployment); the pages can be switched off with `FastAPI(docs_url=None, redoc_url=None)`.
 
 ---
 
