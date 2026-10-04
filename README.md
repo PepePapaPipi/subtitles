@@ -8,7 +8,7 @@ The subtitles can come from three places:
 2. **Your own text (`.txt`).** You give the exact text that is spoken, with no timestamps. The app listens to the audio only to work out *when* each word is said.
 3. **A ready-made subtitle file (`.srt` / `.vtt`).** It is used as it is.
 
-Every video and its subtitles are saved, so you can come back later, fix badly transcribed words in an editor and remake the video.
+Every video and its subtitles are saved, so you can come back later, **watch** the result in the app, fix badly transcribed words in an editor and make a **new version** of the video. The **original** stays next to every corrected version, so you can compare them side by side. While a video is processed, a **progress bar with percentage and time left** is shown for every step.
 
 Everything runs locally: no API keys, no paid services, and your videos never leave the machine the app runs on.
 
@@ -74,9 +74,12 @@ flowchart LR
     D --> F
     E --> F
     F --> G[Subtitles burned<br/>into the video]
-    G --> H[Download video,<br/>.srt or .vtt]
-    G --> I[Optional: fix words<br/>in the editor]
-    I -- Save and update video --> G
+    G --> S[Saved as version<br/>Original]
+    S --> V[Watch and compare versions<br/>in the player window]
+    S --> H[Download video,<br/>.srt or .vtt]
+    S --> I[Optional: fix words in the editor,<br/>or upload an edited .srt / .vtt / .txt]
+    I -- Save as new version --> N[Burned and saved as<br/>Edit 1, Edit 2, ...]
+    N --> V
 ```
 
 ### 1. Upload a video
@@ -88,9 +91,31 @@ On the home page, choose a video (or drag it in) and click **Add subtitles**.
   - a **`.txt`** with what is said in the video. No timestamps are needed. Each line of the file starts a new subtitle, and long lines are split automatically. Your exact words, spelling and punctuation are kept.
   - a **`.srt`** or **`.vtt`** that already has timings. It is used as it is, without transcribing.
 
-The video appears under **Your videos** with its progress: *Waiting*, *Transcribing* (or *Matching your text to the speech*), *Adding the subtitles to the video*, and then the number of subtitles.
+### 2. Follow the progress
 
-### 2. Review and fix the subtitles (optional)
+A progress bar appears for each of the four steps, with the percentage done and an estimate of the time left:
+
+| Step | What happens | How the % is measured |
+|---|---|---|
+| **Uploading video** | The file is sent from your browser to the app. | Bytes sent by the browser. |
+| **Transcribing audio** (or *Matching your text to the speech* / *Reading your subtitle file*) | Whisper listens to the audio. | How far into the audio Whisper has got. |
+| **Adding subtitles to the video** | ffmpeg draws the subtitles onto every frame. | How much of the video ffmpeg has rendered. |
+| **Saving video** | ffmpeg writes the final file, ready to play in a browser. | How much of the video has been written. |
+
+The upload bar is shown in the upload box. Once the upload is done, the video appears under **Your videos** and the other bars continue there. The time left is an estimate based on the speed so far, so it settles after the first few percent. Saving usually takes only a few seconds.
+
+### 3. Watch the result and compare versions
+
+Every video in the list has one **▶** button per version:
+
+- **▶ Original** is the first video, made from the automatic transcription (or from the text you uploaded with the video).
+- **▶ Edit 1**, **▶ Edit 2**, ... are the videos made later from corrected subtitles, oldest first.
+
+Click one to open the player window. If there are several versions, buttons at the top switch between them **at the same moment of the video**, so you can compare the original subtitles with the corrected ones. Each version shows where its subtitles came from (*automatic transcription*, *edited in the app*, *from a subtitle file* or *from your text*).
+
+The window also has buttons to download that version's video, `.srt` or `.vtt`, to go to the editor, and to **delete** an edited version you no longer need. The Original can only be deleted together with the whole video. Close the window with **Close**, the `Esc` key or by clicking outside it.
+
+### 4. Review and fix the subtitles (optional)
 
 Click **Edit** next to a video to open the editor:
 
@@ -99,16 +124,19 @@ Click **Edit** next to a video to open the editor:
   - Fix any word that was transcribed badly.
   - Click a time to jump the video there; the subtitle being shown is highlighted.
   - **Remove** a subtitle, or **Add subtitle at current time**.
-- **Save** stores your changes. The `.srt` and `.vtt` downloads use them immediately.
-- **Save and update video** also remakes the video with the corrected subtitles. The previous video stays downloadable until the new one is ready.
+- **Save** stores your changes as a draft, without making a video.
+- **Save as new version** stores your changes and makes a new video from them, called *Edit 1*, then *Edit 2*, and so on. The Original and the earlier versions are not changed.
+- **Upload an edited .srt, .vtt or .txt as a new version** is for subtitles corrected outside the app (for example in a text editor). A `.srt` / `.vtt` is used as it is; a `.txt` is timed against the speech, like at upload. The editor then shows the subtitles from that file.
 
 If you try to leave the editor with unsaved changes, the page asks first.
 
-### 3. Download
+While a new version is made, the same progress bars show its steps (*Reading your subtitle file* for an upload, then *Adding subtitles* and *Saving video*).
 
-From the editor: **Download video** (subtitles burned in), **.srt** or **.vtt**.
+### 5. Download
 
-### 4. Everything stays saved
+From the player window (the version you are watching) or the editor (the newest version): **Download video** (subtitles burned in), **.srt** or **.vtt**. The file names say which version it is, for example `interview.subtitled.mp4` for the Original and `interview.edit1.subtitled.mp4` for Edit 1.
+
+### 6. Everything stays saved
 
 Every upload lives in its own folder under `data/` (see [Where files are stored](#where-files-are-stored)). It survives restarts of the app or of Docker. Click **Delete** in the list to remove a video and all its files.
 
@@ -119,7 +147,7 @@ Every upload lives in its own folder under `data/` (see [Where files are stored]
 ```mermaid
 flowchart TB
     subgraph Browser
-        UI["index.html<br/>(HTML + CSS + plain JavaScript)"]
+        UI["index.html<br/>(HTML + CSS + plain JavaScript)<br/>upload · progress bars · player · editor"]
     end
 
     subgraph Container["Docker container (python:3.11-slim)"]
@@ -133,7 +161,7 @@ flowchart TB
     Data[("data/ folder<br/>one folder per video:<br/>video, subtitles, job status")]
     Models[("Docker volume<br/>Whisper model cache")]
 
-    UI -- "HTTP / JSON<br/>upload, poll status, edit, download" --> API
+    UI -- "HTTP / JSON<br/>upload, poll progress, edit, view, download" --> API
     API -- start job --> Worker
     Worker --> Core
     Core --> Whisper
@@ -155,28 +183,34 @@ sequenceDiagram
     participant D as data/ folder
 
     U->>B: Choose video (+ optional .txt / .srt)
-    B->>A: POST /api/jobs (upload)
+    B->>A: POST /api/jobs (upload, browser shows upload %)
     A->>D: Save input video, text file, job.json (queued)
     A-->>B: Job id
     A->>W: Start background job
-    loop every 2 seconds
+    loop every second while it runs
         B->>A: GET /api/jobs
-        A-->>B: Status (queued, transcribing, burning, done)
+        A-->>B: Step and progress (e.g. transcribing, 0.42)
     end
     W->>S: Transcribe, align text or read subtitle file
-    S-->>W: Subtitles (start, end, text)
+    S-->>W: Progress, then subtitles (start, end, text)
     W->>D: cues.json, subtitles.srt, subtitles.vtt
-    W->>S: Burn subtitles with ffmpeg
-    S->>D: output.mp4
-    W->>D: job.json (done)
-    U->>B: Edit, fix words, Save and update video
+    W->>S: Burn subtitles with ffmpeg (burning)
+    S-->>W: Progress
+    S->>D: output.render.mp4
+    W->>S: Save final file with ffmpeg (saving)
+    S-->>W: Progress
+    S->>D: versions/1/output.mp4
+    W->>D: job.json (done, versions: Original)
+    U->>B: ▶ Original
+    B->>A: GET /api/jobs/{id}/versions/1/video
+    A-->>B: Subtitled video plays in the player window
+    U->>B: Edit, fix words, Save as new version
     B->>A: PUT /api/jobs/{id}/cues?burn=true
     A->>D: New cues.json, .srt, .vtt
-    A->>W: Remake the video
-    W->>D: New output.mp4
-    U->>B: Download
-    B->>A: GET /api/jobs/{id}/video
-    A-->>B: Subtitled video
+    A->>W: Make a new version (burning, saving)
+    W->>D: versions/2/ (Edit 1), versions/1 untouched
+    U->>B: Switch between Original and Edit 1
+    B->>A: GET /api/jobs/{id}/versions/{n}/video
 ```
 
 The app has three parts.
@@ -185,8 +219,9 @@ The app has three parts.
 
 One single HTML file with inline CSS and **plain JavaScript** (no framework such as React, and no build step). It is served by the same Python server as the API.
 
-- **Home view:** upload form and the list of saved videos. While a video is being processed, it asks the server for the status every 2 seconds (polling).
-- **Editor view** (`#/video/<id>`): an HTML5 `<video>` player plus an editable list of subtitles. The preview subtitles are a WebVTT track generated in the browser from your unsaved edits.
+- **Home view:** upload form and the list of saved videos. While a video is being processed, it asks the server for the status every second (polling) and draws a progress bar for each step. The time left is estimated in the browser from the progress so far and the time the step started.
+- **Player window:** each version's **▶** button opens an HTML `<dialog>` with a `<video>` player, buttons to switch version (keeping the playback time), and download, edit and delete buttons.
+- **Editor view** (`#/video/<id>`): an HTML5 `<video>` player plus an editable list of subtitles. The preview subtitles are a WebVTT track generated in the browser from your unsaved edits. It can also upload an edited subtitle file as a new version.
 - It talks to the backend with `fetch` / `XMLHttpRequest` (the upload uses `XMLHttpRequest` to show upload progress).
 - It follows the system light or dark mode and works on phone-sized screens.
 
@@ -198,6 +233,8 @@ A **FastAPI** application run by the **Uvicorn** web server.
 - Saves each upload to `data/<job id>/` and starts a **background thread** to process it, so the upload returns right away.
 - A lock makes sure only **one video is processed at a time**, because Whisper and ffmpeg each already use all CPU cores. Other uploads wait in the *queued* state.
 - Job status is stored in `job.json` on disk (not in memory), so the list of videos survives restarts. If the server stops while a job is running, that job is marked as failed on the next start.
+- Every finished video is a **version** in its own folder (`versions/1`, `versions/2`, ...), listed in `job.json`. A new version never overwrites an older one. Folders from before versions existed are moved into `versions/1` automatically when the app starts.
+- While a step runs, its progress (0 to 1) and start time are written to `job.json`, at most once per percent. The file is written to a temporary file and swapped in, so the page never reads a half-written status.
 
 ### Processing: `app/subtitles.py`
 
@@ -205,12 +242,12 @@ All the subtitle logic, independent of the web layer:
 
 | Function | What it does |
 |---|---|
-| `transcribe()` | Runs Whisper with word-level timestamps and turns the words into subtitles. |
+| `transcribe()` | Runs Whisper with word-level timestamps and turns the words into subtitles, reporting progress. |
 | `align_text()` | Times your own `.txt` against the speech (see below). |
 | `parse_subtitle_file()` | Reads `.srt` and `.vtt` files. |
 | `group_words()` | Groups timed words into readable subtitles. |
 | `to_srt()` / `to_vtt()` | Write the subtitle files. |
-| `burn_subtitles()` | Calls ffmpeg to draw the subtitles onto the video. |
+| `burn_subtitles()` | Calls ffmpeg to draw the subtitles onto the video, then to save the final file, reporting progress for both. |
 
 ---
 
@@ -275,7 +312,7 @@ subtitles/
 ### Automatic transcription
 
 1. faster-whisper reads the audio straight from the video file. Voice activity detection skips silent parts.
-2. It returns the text **with a start and end time for every word**.
+2. It returns the text **with a start and end time for every word**, one segment at a time, in order. The progress is the end time of the latest segment divided by the length of the audio.
 3. `group_words()` builds subtitles from those words. A subtitle ends:
    - at the end of a sentence (`.`, `?`, `!`),
    - when it would be longer than **42 characters**, or
@@ -298,29 +335,44 @@ The file is parsed directly (timings, multi-line text, VTT cue settings and tags
 
 ### Burning the subtitles into the video
 
-ffmpeg's `subtitles` filter (based on libass) draws the subtitles onto every frame:
+This happens in two ffmpeg runs, which are the *Adding subtitles* and *Saving video* steps.
+
+**1. Adding subtitles.** ffmpeg's `subtitles` filter (based on libass) draws the subtitles onto every frame:
 
 ```
 ffmpeg -i input.mp4 -vf "subtitles=subtitles.srt:force_style='FontSize=22,Outline=2,Shadow=0,MarginV=24'" \
-       -c:v libx264 -preset veryfast -crf 20 -c:a copy output.mp4
+       -c:v libx264 -preset veryfast -crf 20 -c:a copy output.render.mp4
 ```
 
-- Video is re-encoded as H.264 (`crf 20` is good quality); the audio is copied unchanged.
-- ffmpeg writes to a temporary file first, which then replaces `output.mp4`. This means the previous version stays downloadable until the new one is complete.
+The video is re-encoded as H.264 (`crf 20` is good quality); the audio is copied unchanged.
+
+**2. Saving the video.** The rendered file is copied without re-encoding, moving its index to the start of the file (`+faststart`) so browsers can start playing it before it has fully loaded:
+
+```
+ffmpeg -i output.render.mp4 -c copy -movflags +faststart output.tmp.mp4
+```
+
+Then `output.tmp.mp4` is renamed to `output.mp4` and the intermediate file is deleted. All of this happens inside the new version's folder, so the other versions can be watched while it runs. If it fails, the unfinished version folder is removed.
+
+**Progress.** Both runs use ffmpeg's `-progress pipe:1` option, which prints how far into the video it is (`out_time_us`) about twice a second. Divided by the video length (read with `ffprobe`), that gives the percentage.
 
 ### Job states
 
 ```mermaid
 stateDiagram-v2
-    [*] --> queued: upload
+    [*] --> queued: upload finished
     queued --> transcribing
     transcribing --> burning: subtitles saved
-    burning --> done
+    burning --> saving: all frames rendered
+    saving --> done
     transcribing --> error
     burning --> error
-    done --> queued: Save and update video
-    error --> queued: Save and update video (if subtitles exist)
+    saving --> error
+    done --> queued: Save as new version / upload edited file
+    error --> queued: Save as new version (if subtitles exist)
 ```
+
+`transcribing`, `burning` and `saving` are the steps with a progress bar; each one stores its `progress` (0 to 1) and `stage_started` time in `job.json`.
 
 ---
 
@@ -333,11 +385,37 @@ data/
 └── 42feb3a14fe04df194d6b2fde4daa48a/
     ├── input.mp4        # the original upload, never changed
     ├── text.txt         # only if you uploaded a text (.txt, .srt or .vtt)
-    ├── cues.json        # the subtitles: the "source of truth" the editor changes
+    ├── version-text.srt # only if you uploaded an edited file as a new version
+    ├── cues.json        # the subtitles the editor is working on
     ├── subtitles.srt    # generated from cues.json
     ├── subtitles.vtt    # generated from cues.json
-    ├── output.mp4       # the video with subtitles burned in
-    └── job.json         # status, file name, language, dates, errors
+    ├── job.json         # status, progress, versions, file name, language, dates, errors
+    └── versions/
+        ├── 1/           # Original
+        │   ├── cues.json, subtitles.srt, subtitles.vtt   # frozen copy of its subtitles
+        │   └── output.mp4                                 # the video with subtitles burned in
+        └── 2/           # Edit 1, same files
+```
+
+While a version is being made, two temporary files can also appear in its folder: `output.render.mp4` and `output.tmp.mp4`. They are removed or renamed when it finishes. Each version is a full video file, so it takes about as much space as the upload; delete versions you don't need from the player window.
+
+`job.json` looks like this while a video is being processed:
+
+```json
+{
+  "id": "42feb3a14fe04df194d6b2fde4daa48a",
+  "filename": "interview.mp4",
+  "source": "automatic",
+  "status": "burning",
+  "progress": 0.42,
+  "stage_started": "2026-10-04T17:12:08+00:00",
+  "language": "es",
+  "cues": 12,
+  "making_version": "Edit 1",
+  "versions": [
+    { "n": 1, "name": "Original", "source": "automatic", "cues": 12, "created": "2026-10-04T17:08:55+00:00" }
+  ]
+}
 ```
 
 `cues.json` looks like this:
@@ -361,14 +439,17 @@ The frontend uses these endpoints. FastAPI also shows interactive documentation 
 |---|---|---|
 | `GET` | `/api/jobs` | List all saved videos, newest first. |
 | `POST` | `/api/jobs` | Upload a video. Form fields: `file` (video, required), `text` (`.txt`/`.srt`/`.vtt`, optional), `language` (e.g. `es`, optional). |
-| `GET` | `/api/jobs/{id}` | Status of one video. |
+| `GET` | `/api/jobs/{id}` | Status of one video, with `status`, `progress` and `stage_started` while it is processed. |
 | `DELETE` | `/api/jobs/{id}` | Delete a video and all its files. |
 | `GET` | `/api/jobs/{id}/cues` | The subtitles as JSON. |
-| `PUT` | `/api/jobs/{id}/cues` | Save edited subtitles (JSON list). Add `?burn=true` to also remake the video. |
+| `PUT` | `/api/jobs/{id}/cues` | Save edited subtitles (JSON list). Add `?burn=true` to also make a new version of the video. |
+| `POST` | `/api/jobs/{id}/versions` | Make a new version from an edited file. Form field: `text` (`.srt`/`.vtt`, or `.txt` to time against the speech). |
+| `DELETE` | `/api/jobs/{id}/versions/{n}` | Delete one edited version (not the Original). |
+| `GET` | `/api/jobs/{id}/versions/{n}/video` | The video of version `n` (player window and download; supports seeking). |
+| `GET` | `/api/jobs/{id}/versions/{n}/srt` / `vtt` | The subtitles of version `n`. |
 | `GET` | `/api/jobs/{id}/source` | The original video (used by the editor preview). |
-| `GET` | `/api/jobs/{id}/video` | Download the subtitled video. |
-| `GET` | `/api/jobs/{id}/srt` | Download the `.srt`. |
-| `GET` | `/api/jobs/{id}/vtt` | Download the `.vtt`. |
+| `GET` | `/api/jobs/{id}/video` | The video of the newest version. |
+| `GET` | `/api/jobs/{id}/srt` / `vtt` | The subtitles of the newest version. |
 
 Example with `curl`:
 
@@ -530,4 +611,3 @@ Whichever option you pick, if the app will be reachable by people other than you
 - Choose the subtitle style (font, size, colour, position) from the page.
 - Split or merge subtitles in the editor, and drag their timing on a waveform.
 - Export only the subtitles without re-encoding the video (soft subtitles inside an `.mp4` or `.mkv`).
-- Show a progress percentage while transcribing and burning.

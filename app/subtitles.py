@@ -4,14 +4,19 @@ import difflib
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from faster_whisper import WhisperModel
 
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 MAX_CHARS = 42      # max characters per subtitle cue
 MAX_DURATION = 6.0  # max seconds per subtitle cue
+
+# Called with a fraction between 0 and 1 while a long step runs.
+Progress = Callable[[float], None]
 
 _model = None
 
@@ -30,23 +35,36 @@ class Cue:
     text: str
 
 
-def _whisper_words(video_path: Path, language: str | None):
-    """Run Whisper and return its segments (with word timings) and language."""
+def _whisper_words(video_path: Path, language: str | None, on_progress: Progress | None = None):
+    """Run Whisper and return its segments (with word timings) and language.
+
+    Whisper yields segments in order as it works through the audio, so the end
+    time of the latest segment divided by the audio length is the progress.
+    """
     segments, info = get_model().transcribe(
         str(video_path),
         language=language or None,
         word_timestamps=True,
         vad_filter=True,
     )
-    return list(segments), info.language
+    result = []
+    for segment in segments:
+        result.append(segment)
+        if on_progress and info.duration:
+            on_progress(min(1.0, segment.end / info.duration))
+    if on_progress:
+        on_progress(1.0)
+    return result, info.language
 
 
-def transcribe(video_path: Path, language: str | None = None) -> tuple[list[Cue], str]:
+def transcribe(
+    video_path: Path, language: str | None = None, on_progress: Progress | None = None
+) -> tuple[list[Cue], str]:
     """Transcribe the audio of a video into short subtitle cues.
 
     Returns the cues and the detected (or given) language code.
     """
-    segments, detected = _whisper_words(video_path, language)
+    segments, detected = _whisper_words(video_path, language, on_progress)
     cues: list[Cue] = []
     for segment in segments:
         if segment.words:
@@ -100,7 +118,9 @@ def _normalize(word: str) -> str:
     return "".join(ch for ch in word.lower() if ch.isalnum())
 
 
-def align_text(video_path: Path, text: str, language: str | None = None) -> tuple[list[Cue], str]:
+def align_text(
+    video_path: Path, text: str, language: str | None = None, on_progress: Progress | None = None
+) -> tuple[list[Cue], str]:
     """Time the user's own text against the speech in the video.
 
     Whisper transcribes the audio with word timings, then each word of the
@@ -116,7 +136,7 @@ def align_text(video_path: Path, text: str, language: str | None = None) -> tupl
     if not script:
         raise ValueError("The text file is empty.")
 
-    segments, detected = _whisper_words(video_path, language)
+    segments, detected = _whisper_words(video_path, language, on_progress)
     heard = [w for s in segments for w in (s.words or []) if _normalize(w.word)]
     if not heard:
         raise ValueError("No speech was found in this video, so the text can't be timed.")
@@ -217,28 +237,79 @@ def to_vtt(cues: list[Cue]) -> str:
     return "WEBVTT\n\n" + "\n".join(blocks)
 
 
-def burn_subtitles(video_path: Path, srt_path: Path, output_path: Path) -> None:
-    """Render the SRT onto the video frames with ffmpeg.
+def video_duration(video_path: Path) -> float:
+    """Length of a video in seconds, read with ffprobe (0 if unknown)."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video_path)],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return 0.0
 
-    Writes to a temporary file first so the previous video stays downloadable
-    until the new one is complete.
+
+def _run_ffmpeg(args: list[str], cwd: Path, duration: float, on_progress: Progress | None) -> None:
+    """Run ffmpeg, reporting how much of the video it has processed so far."""
+    command = ["ffmpeg", "-y", "-loglevel", "error", "-nostats", "-progress", "pipe:1", *args]
+    # Errors go to a temporary file so a full stderr pipe can never block ffmpeg.
+    with tempfile.TemporaryFile(mode="w+") as errors:
+        process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=errors, text=True)
+        for line in process.stdout:
+            key, _, value = line.strip().partition("=")
+            if key == "out_time_us" and duration and on_progress and value.isdigit():
+                on_progress(min(1.0, int(value) / 1_000_000 / duration))
+        process.wait()
+        if process.returncode != 0:
+            errors.seek(0)
+            raise subprocess.CalledProcessError(process.returncode, command, stderr=errors.read())
+    if on_progress:
+        on_progress(1.0)
+
+
+def burn_subtitles(
+    video_path: Path,
+    srt_path: Path,
+    output_path: Path,
+    on_progress: Progress | None = None,
+    on_saving: Callable[[], None] | None = None,
+    on_saving_progress: Progress | None = None,
+) -> None:
+    """Render the SRT onto the video frames with ffmpeg, in two steps.
+
+    1. Draw the subtitles onto every frame and re-encode the video
+       (on_progress reports the share of the video rendered).
+    2. Save the final file: copy it without re-encoding and move its index to
+       the front (+faststart), so browsers can start playing before the whole
+       file has downloaded (on_saving starts this step, on_saving_progress
+       reports it).
+
+    The finished file replaces output_path only at the end, so the previous
+    video stays downloadable until the new one is complete.
     """
-    tmp_path = output_path.with_name(output_path.stem + ".tmp" + output_path.suffix)
+    rendered = output_path.with_name(output_path.stem + ".render" + output_path.suffix)
+    saved = output_path.with_name(output_path.stem + ".tmp" + output_path.suffix)
+    duration = video_duration(video_path)
     # Run inside the SRT's folder so the subtitles filter gets a plain file name
     # and we avoid ffmpeg's filter-argument escaping rules.
     style = "FontSize=22,Outline=2,Shadow=0,MarginV=24"
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", str(video_path.resolve()),
-            "-vf", f"subtitles={srt_path.name}:force_style='{style}'",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "copy",
-            str(tmp_path.resolve()),
-        ],
-        cwd=srt_path.parent,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    tmp_path.replace(output_path)
+    try:
+        _run_ffmpeg(
+            [
+                "-i", str(video_path.resolve()),
+                "-vf", f"subtitles={srt_path.name}:force_style='{style}'",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-c:a", "copy",
+                str(rendered.resolve()),
+            ],
+            cwd=srt_path.parent, duration=duration, on_progress=on_progress,
+        )
+        if on_saving:
+            on_saving()
+        _run_ffmpeg(
+            ["-i", str(rendered.resolve()), "-c", "copy", "-movflags", "+faststart", str(saved.resolve())],
+            cwd=srt_path.parent, duration=duration, on_progress=on_saving_progress,
+        )
+        saved.replace(output_path)
+    finally:
+        rendered.unlink(missing_ok=True)

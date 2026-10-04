@@ -28,6 +28,35 @@
     button:disabled { opacity: .5; cursor: default; }
     a.button { text-decoration: none; display: inline-block; }
     .status { margin-top: 16px; color: var(--muted); min-height: 1.5em; }
+
+    /* Step-by-step progress */
+    .steps { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+    .step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font-size: 14px; }
+    .step .icon { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border); display: grid; place-items: center; font-size: 11px; line-height: 1; }
+    .step.done .icon { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .step.active .icon { border-color: var(--accent); }
+    .step .step-name { color: var(--muted); }
+    .step.active .step-name, .step.done .step-name { color: var(--text); }
+    .step .pct { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .step .bar { grid-column: 2 / -1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+    .step .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s ease; }
+    .step.waiting .bar { display: none; }
+    /* Video player window */
+    dialog.viewer { width: min(960px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--text); }
+    dialog.viewer::backdrop { background: rgba(0, 0, 0, .7); }
+    .viewer header { display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .viewer header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .viewer video { border-radius: 0; aspect-ratio: 16 / 9; object-fit: contain; max-height: calc(100vh - 160px); }
+    .viewer footer { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px 16px; }
+    .viewer .tabs { padding: 12px 16px 0; }
+    .viewer .hint { margin: 8px 16px 12px; }
+    .versions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .versions button { padding: 4px 10px; font-size: 14px; }
+    .versions button[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+    button.danger { color: var(--error); }
+    .spacer { flex: 1; }
+    .jobs .steps { margin-top: 8px; max-width: 520px; white-space: normal; }
+    .jobs li.step { display: grid; padding: 0; border-top: 0; }
     .status.error { color: var(--error); white-space: pre-wrap; }
     video { width: 100%; border-radius: 8px; background: #000; display: block; }
     [hidden] { display: none !important; }
@@ -105,11 +134,17 @@
         <p class="hint">Preview of the original video with your current edits. Click a time to jump there.</p>
         <div class="row">
           <button id="ed-save">Save</button>
-          <button class="primary" id="ed-burn">Save and update video</button>
+          <button class="primary" id="ed-burn">Save as new version</button>
           <span class="dirty" id="ed-dirty" hidden>Unsaved changes</span>
+        </div>
+        <p class="hint">Each new version is a separate video. The original and every earlier version stay available under Your videos.</p>
+        <div class="row">
+          <label class="button" for="ed-file">Upload an edited .srt, .vtt or .txt as a new version</label>
+          <input type="file" id="ed-file" accept=".srt,.vtt,.txt,text/plain">
         </div>
         <div class="status" id="ed-status"></div>
         <div class="row" id="ed-downloads">
+          <span class="hint" id="dl-label" style="margin:0"></span>
           <a class="button" id="dl-video">Download video</a>
           <a class="button" id="dl-srt">.srt</a>
           <a class="button" id="dl-vtt">.vtt</a>
@@ -123,23 +158,98 @@
   </section>
 </main>
 
+<dialog class="viewer" id="viewer">
+  <header>
+    <strong id="viewer-name"></strong>
+    <button id="viewer-close" title="Close (Esc)">Close</button>
+  </header>
+  <div class="versions tabs" id="viewer-versions"></div>
+  <p class="hint" id="viewer-info"></p>
+  <video id="viewer-video" controls playsinline></video>
+  <footer>
+    <a class="button primary" id="viewer-dl">Download video</a>
+    <a class="button" id="viewer-srt">.srt</a>
+    <a class="button" id="viewer-vtt">.vtt</a>
+    <a class="button" id="viewer-edit">Edit subtitles</a>
+    <span class="spacer"></span>
+    <button class="danger" id="viewer-delete">Delete this version</button>
+  </footer>
+</dialog>
+
 <script>
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const BUSY = ["queued", "transcribing", "burning"];
+  const BUSY = ["queued", "transcribing", "burning", "saving"];
   const LABELS = {
     queued: "Waiting to start…",
-    transcribing: "Transcribing the audio… this can take a few minutes for long videos.",
+    transcribing: "Transcribing the audio…",
     burning: "Adding the subtitles to the video…",
+    saving: "Saving the video…",
     done: "Ready",
     error: "Failed",
   };
 
-  function label(job) {
-    if (job.status === "transcribing" && job.source === "your text") return "Matching your text to the speech…";
-    if (job.status === "transcribing" && job.source === "subtitle file") return "Reading your subtitle file…";
-    return LABELS[job.status] || job.status;
+  // ---------- Progress bars ----------
+  function timeLeft(fraction, startedMs) {
+    const elapsed = (Date.now() - startedMs) / 1000;
+    if (!startedMs || fraction < 0.03 || fraction >= 1 || elapsed < 3) return "";
+    const left = elapsed * (1 - fraction) / fraction;
+    if (left < 60) return ` · about ${Math.max(5, Math.round(left / 5) * 5)} s left`;
+    return ` · about ${Math.round(left / 60)} min left`;
   }
+
+  // steps: [{ name, state: "done" | "active" | "waiting", fraction?, started? }]
+  function stepsHTML(steps) {
+    return `<ol class="steps">${steps.map((st) => {
+      const pct = st.state === "done" ? 100 : Math.round((st.fraction || 0) * 100);
+      const right = st.state === "done" ? "100%"
+        : st.state === "waiting" ? "waiting"
+        : `${pct}%${timeLeft(st.fraction || 0, st.started)}`;
+      return `<li class="step ${st.state}">
+        <span class="icon">${st.state === "done" ? "✓" : ""}</span>
+        <span class="step-name">${esc(st.name)}</span>
+        <span class="pct">${right}</span>
+        <span class="bar"><i style="width:${pct}%"></i></span>
+      </li>`;
+    }).join("")}</ol>`;
+  }
+
+  function transcribeStepName(source) {
+    if (source === "your text") return "Matching your text to the speech";
+    if (source === "subtitle file") return "Reading your subtitle file";
+    return "Transcribing audio";
+  }
+
+  // The four steps of a job, from its saved status and progress.
+  function jobSteps(job) {
+    const order = ["upload", "transcribing", "burning", "saving"];
+    // step_source is set while a new version is made from an uploaded file.
+    const at = job.status === "done" ? 4 : job.status === "queued" ? (job.cues && !job.step_source ? 2 : 1) : order.indexOf(job.status);
+    const started = job.stage_started ? Date.parse(job.stage_started) : 0;
+    const state = (i) => (i < at ? "done" : i === at && job.status !== "queued" ? "active" : "waiting");
+    return [
+      { name: "Uploading video", state: "done" },
+      { name: transcribeStepName(job.step_source || job.source), state: state(1), fraction: job.progress, started },
+      { name: "Adding subtitles to the video", state: state(2), fraction: job.progress, started },
+      { name: "Saving video", state: state(3), fraction: job.progress, started },
+    ];
+  }
+
+  function label(job) {
+    const source = job.step_source || job.source;
+    let text = LABELS[job.status] || job.status;
+    if (job.status === "transcribing" && source === "your text") text = "Matching your text to the speech…";
+    if (job.status === "transcribing" && source === "subtitle file") text = "Reading your subtitle file…";
+    return job.making_version ? `Making ${job.making_version}: ${text}` : text;
+  }
+
+  const SOURCES = {
+    automatic: "automatic transcription",
+    "your text": "from your text",
+    "subtitle file": "from a subtitle file",
+    editor: "edited in the app",
+  };
+  const versionsOf = (job) => job.versions || [];
 
   function setStatus(el, text, isError = false) {
     el.textContent = text;
@@ -180,6 +290,17 @@
 
   start.addEventListener("click", () => {
     start.disabled = true;
+    const uploadStarted = Date.now();
+    const showUpload = (fraction) => {
+      $("upload-status").className = "status";
+      $("upload-status").innerHTML = stepsHTML([
+        { name: "Uploading video", state: "active", fraction, started: uploadStarted },
+        { name: transcribeStepName($("text").files[0] ? (/\.(srt|vtt)$/i.test($("text").files[0].name) ? "subtitle file" : "your text") : "automatic"), state: "waiting" },
+        { name: "Adding subtitles to the video", state: "waiting" },
+        { name: "Saving video", state: "waiting" },
+      ]);
+    };
+    showUpload(0);
     const form = new FormData();
     form.append("file", file);
     form.append("language", $("language").value);
@@ -187,12 +308,12 @@
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/jobs");
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) setStatus($("upload-status"), `Uploading… ${Math.round(e.loaded / e.total * 100)}%`);
+      if (e.lengthComputable) showUpload(e.loaded / e.total);
     };
     xhr.onload = () => {
       start.disabled = false;
       if (xhr.status !== 200) { setStatus($("upload-status"), "Upload failed.", true); return; }
-      setStatus($("upload-status"), "Uploaded. It's being processed below.");
+      setStatus($("upload-status"), "Uploaded. Follow its progress below under Your videos.");
       pick(null); fileInput.value = ""; $("text").value = ""; $("text-clear").hidden = true;
       loadJobs();
     };
@@ -201,32 +322,91 @@
   });
 
   // ---------- Saved videos ----------
-  let jobsTimer = null;
+  let jobsTimer = null, lastJobs = [];
   async function loadJobs() {
     clearTimeout(jobsTimer);
-    const jobs = await (await fetch("/api/jobs")).json();
+    const jobs = lastJobs = await (await fetch("/api/jobs")).json();
     $("no-jobs").hidden = jobs.length > 0;
     $("jobs").innerHTML = jobs.map((j) => {
       const busy = BUSY.includes(j.status);
       const when = new Date(j.created).toLocaleString();
       const from = j.source && j.source !== "automatic" ? ` · from ${esc(j.source)}` : "";
-      const info = j.status === "done" ? `${j.cues} subtitles${j.language ? " · " + esc(j.language) : ""}${from}${j.edited ? " · edited" : ""}`
+      const versions = versionsOf(j);
+      const count = versions.length > 1 ? ` · ${versions.length} versions` : "";
+      const info = j.status === "done" ? `${j.cues} subtitles${j.language ? " · " + esc(j.language) : ""}${from}${count}`
         : j.status === "error" ? `<span style="color:var(--error)">${esc(j.error || "Failed")}</span>`
         : esc(label(j));
+      const buttons = versions.map((v) =>
+        `<button ${v.name === "Original" ? 'class="primary" ' : ""}data-view="${j.id}" data-n="${v.n}" title="Watch ${esc(v.name)} (${esc(SOURCES[v.source] || v.source)})">▶ ${esc(v.name)}</button>`).join("");
       return `<li>
-        <div class="name"><div>${esc(j.filename || "video")}</div><div class="meta">${when} · ${info}</div></div>
-        ${j.cues ? `<a class="button primary" href="#/video/${j.id}">Edit</a>` : ""}
+        <div class="name"><div>${esc(j.filename || "video")}</div><div class="meta">${when} · ${info}</div>${buttons ? `<div class="versions">${buttons}</div>` : ""}${busy ? stepsHTML(jobSteps(j)) : ""}</div>
+        ${j.cues ? `<a class="button" href="#/video/${j.id}">Edit</a>` : ""}
         ${busy ? "" : `<button data-delete="${j.id}" title="Delete">Delete</button>`}
       </li>`;
     }).join("");
-    if (jobs.some((j) => BUSY.includes(j.status)) && !$("home").hidden) jobsTimer = setTimeout(loadJobs, 2000);
+    if (jobs.some((j) => BUSY.includes(j.status)) && !$("home").hidden) jobsTimer = setTimeout(loadJobs, 1000);
   }
   $("jobs").addEventListener("click", async (e) => {
+    const view = e.target.closest("[data-view]");
+    if (view) { openViewer(lastJobs.find((j) => j.id === view.dataset.view), Number(view.dataset.n)); return; }
     const id = e.target.dataset.delete;
-    if (!id || !confirm("Delete this video and its subtitles?")) return;
+    if (!id || !confirm("Delete this video, all its versions and subtitles?")) return;
     await fetch(`/api/jobs/${id}`, { method: "DELETE" });
     loadJobs();
   });
+
+  // ---------- Video player window ----------
+  const viewer = $("viewer"), viewerVideo = $("viewer-video");
+  let viewerJob = null, viewerN = null;
+  function openViewer(job, n) {
+    if (!job || !versionsOf(job).length) return;
+    viewerJob = job;
+    $("viewer-name").textContent = job.filename || "video";
+    $("viewer-edit").href = `#/video/${job.id}`;
+    showVersion(n || versionsOf(job)[0].n, false);
+    if (!viewer.open) viewer.showModal();
+    viewerVideo.play().catch(() => {});  // autoplay may be blocked; the controls still work
+  }
+
+  // Switch version; keep the playback position so versions are easy to compare.
+  function showVersion(n, keepTime = true) {
+    const versions = versionsOf(viewerJob);
+    const v = versions.find((x) => x.n === n) || versions[0];
+    viewerN = v.n;
+    const base = `/api/jobs/${viewerJob.id}/versions/${v.n}`;
+    const time = viewerVideo.currentTime, playing = !viewerVideo.paused;
+    $("viewer-versions").innerHTML = versions.length < 2 ? "" : versions.map((x) =>
+      `<button data-n="${x.n}" aria-pressed="${x.n === v.n}">${esc(x.name)}</button>`).join("");
+    $("viewer-info").textContent = `${v.name} · ${SOURCES[v.source] || v.source} · ${v.cues} subtitle${v.cues === 1 ? "" : "s"} · ${new Date(v.created).toLocaleString()}`;
+    viewerVideo.src = `${base}/video`;
+    if (keepTime) {
+      viewerVideo.addEventListener("loadedmetadata", () => {
+        viewerVideo.currentTime = time;
+        if (playing) viewerVideo.play().catch(() => {});
+      }, { once: true });
+    }
+    $("viewer-dl").href = `${base}/video`;
+    $("viewer-srt").href = `${base}/srt`;
+    $("viewer-vtt").href = `${base}/vtt`;
+    $("viewer-delete").hidden = v.name === "Original";
+  }
+  $("viewer-versions").addEventListener("click", (e) => {
+    if (e.target.dataset.n) showVersion(Number(e.target.dataset.n));
+  });
+  $("viewer-delete").addEventListener("click", async () => {
+    const v = versionsOf(viewerJob).find((x) => x.n === viewerN);
+    if (!v || !confirm(`Delete ${v.name}? The other versions are kept.`)) return;
+    const res = await fetch(`/api/jobs/${viewerJob.id}/versions/${v.n}`, { method: "DELETE" });
+    if (!res.ok) { alert((await res.json()).detail || "Could not delete."); return; }
+    viewerJob = await res.json();
+    await loadJobs();
+    if (!versionsOf(viewerJob).length) { viewer.close(); return; }
+    showVersion(versionsOf(viewerJob)[0].n, false);
+  });
+  viewer.addEventListener("close", () => { viewerVideo.pause(); viewerVideo.removeAttribute("src"); viewerVideo.load(); });
+  $("viewer-close").addEventListener("click", () => viewer.close());
+  $("viewer-edit").addEventListener("click", () => viewer.close());
+  viewer.addEventListener("click", (e) => { if (e.target === viewer) viewer.close(); });  // click outside to close
 
   // ---------- Editor ----------
   let jobId = null, cues = [], dirty = false, editorTimer = null, trackUrl = null;
@@ -334,25 +514,52 @@
     setDirty(false);
     cues = await (await fetch(`/api/jobs/${jobId}/cues`)).json();
     renderCues();
-    showJob(body, burn ? null : "Saved. Click “Save and update video” to remake the video with your changes.");
+    showJob(body, burn ? null : "Saved. Click “Save as new version” to make a video with your changes.");
   }
   $("ed-save").addEventListener("click", () => save(false));
   $("ed-burn").addEventListener("click", () => save(true));
+
+  // A subtitle or text file edited outside the app becomes a new version.
+  $("ed-file").addEventListener("change", async () => {
+    const f = $("ed-file").files[0];
+    $("ed-file").value = "";
+    if (!f || (dirty && !confirm("Your unsaved changes will be replaced by this file. Continue?"))) return;
+    const form = new FormData();
+    form.append("text", f);
+    const res = await fetch(`/api/jobs/${jobId}/versions`, { method: "POST", body: form });
+    const body = await res.json();
+    if (!res.ok) { setStatus($("ed-status"), body.detail || "Could not upload.", true); return; }
+    setDirty(false);
+    showJob(body);
+  });
 
   function showJob(job, message) {
     clearTimeout(editorTimer);
     const busy = BUSY.includes(job.status);
     $("ed-save").disabled = $("ed-burn").disabled = busy;
-    const base = `/api/jobs/${job.id}`, bust = `?v=${encodeURIComponent(job.updated || "")}`;
-    $("dl-video").href = `${base}/video${bust}`;
-    $("dl-srt").href = `${base}/srt${bust}`;
-    $("dl-vtt").href = `${base}/vtt${bust}`;
-    $("dl-video").hidden = job.status !== "done";
+    const newest = versionsOf(job).at(-1);
+    $("ed-downloads").hidden = !newest;
+    if (newest) {
+      const base = `/api/jobs/${job.id}/versions/${newest.n}`;
+      $("dl-label").textContent = `Newest version (${newest.name}):`;
+      $("dl-video").href = `${base}/video`;
+      $("dl-srt").href = `${base}/srt`;
+      $("dl-vtt").href = `${base}/vtt`;
+    }
     if (busy) {
-      setStatus($("ed-status"), label(job));
+      $("ed-status").className = "status";
+      $("ed-status").innerHTML = (job.making_version ? `<strong>Making ${esc(job.making_version)}</strong>` : "")
+        + stepsHTML(jobSteps(job).slice(job.step_source ? 1 : 2));
       editorTimer = setTimeout(async () => {
-        if (jobId === job.id) showJob(await (await fetch(base)).json(), "The video is updated with your changes.");
-      }, 1500);
+        if (jobId !== job.id) return;
+        const next = await (await fetch(`/api/jobs/${job.id}`)).json();
+        const made = versionsOf(next).at(-1);
+        if (!BUSY.includes(next.status) && !dirty) {  // a file upload replaced the subtitles
+          cues = await (await fetch(`/api/jobs/${job.id}/cues`)).json();
+          renderCues();
+        }
+        showJob(next, made ? `${made.name} is ready. Watch it and compare it with the others under Your videos.` : "");
+      }, 1000);
     } else if (job.status === "error") {
       setStatus($("ed-status"), job.error || "Something went wrong.", true);
     } else {
