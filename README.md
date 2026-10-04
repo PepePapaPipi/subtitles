@@ -1,65 +1,533 @@
 # Subtitles
 
-Upload a video in your browser and get it back with subtitles. The speech is
-transcribed automatically with [Whisper](https://github.com/SYSTRAN/faster-whisper)
-and the subtitles are burned into the video with ffmpeg. You can also download
-the subtitles as `.srt` or `.vtt`.
+A small web app that adds subtitles to videos. You upload a video in your browser and get it back with the subtitles **burned into the picture**, plus `.srt` and `.vtt` subtitle files.
 
-## Run it with Docker (easiest)
+The subtitles can come from three places:
 
-You only need [Docker Desktop](https://www.docker.com/products/docker-desktop/). Python, ffmpeg and Whisper are all inside the container.
+1. **Automatic transcription.** The speech is transcribed by Whisper, an open-source speech-recognition model that runs on your own computer.
+2. **Your own text (`.txt`).** You give the exact text that is spoken, with no timestamps. The app listens to the audio only to work out *when* each word is said.
+3. **A ready-made subtitle file (`.srt` / `.vtt`).** It is used as it is.
+
+Every video and its subtitles are saved, so you can come back later, fix badly transcribed words in an editor and remake the video.
+
+Everything runs locally: no API keys, no paid services, and your videos never leave the machine the app runs on.
+
+---
+
+## Contents
+
+- [Quick start](#quick-start)
+- [How to use it](#how-to-use-it)
+- [Architecture](#architecture)
+- [Technology stack](#technology-stack)
+- [Project structure](#project-structure)
+- [How the processing works](#how-the-processing-works)
+- [Where files are stored](#where-files-are-stored)
+- [HTTP API](#http-api)
+- [Configuration](#configuration)
+- [Limitations](#limitations)
+- [Next steps: deployment](#next-steps-deployment)
+- [Other ideas for later](#other-ideas-for-later)
+
+---
+
+## Quick start
+
+### With Docker (recommended)
+
+You only need [Docker Desktop](https://www.docker.com/products/docker-desktop/). Python, ffmpeg and Whisper are all installed inside the container.
 
 ```bash
+git clone https://github.com/PepePapaPipi/subtitles.git
+cd subtitles
 docker compose up --build
 ```
 
-Open http://localhost:8000, pick a video and click **Add subtitles**. Stop it with `Ctrl+C`.
+Open <http://localhost:8000>. Stop it with `Ctrl+C`.
 
-The first video takes longer because the Whisper model is downloaded (about 500 MB for `small`). It is kept in a Docker volume, so later runs start right away. Results are saved in the `data/` folder.
+The first video takes longer because the Whisper model is downloaded (about 500 MB for the default `small` model). It is kept in a Docker volume, so later runs start right away.
 
-To use a different model size, change `WHISPER_MODEL` in `docker-compose.yml` and run `docker compose up --build` again.
+### Without Docker
 
-## Run it without Docker
-
-You need Python 3.10+ and [ffmpeg](https://ffmpeg.org/download.html) installed.
+You need Python 3.10+ and [ffmpeg](https://ffmpeg.org/download.html) on your `PATH` (`winget install ffmpeg` on Windows, `brew install ffmpeg` on Mac, `sudo apt install ffmpeg` on Linux).
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+.venv\Scripts\activate           # Mac/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --port 8000
 ```
 
-Open http://localhost:8000, pick a video and click **Add subtitles**.
+Open <http://localhost:8000>.
 
-The first run downloads the Whisper model (about 500 MB for `small`).
+---
 
-## Settings
+## How to use it
 
-| Variable | Default | What it does |
+```mermaid
+flowchart LR
+    A[Upload video] --> B{Text file?}
+    B -- none --> C[Automatic transcription<br/>with Whisper]
+    B -- .txt --> D[Your text is timed<br/>against the speech]
+    B -- .srt / .vtt --> E[Subtitles imported<br/>as they are]
+    C --> F[Subtitles saved]
+    D --> F
+    E --> F
+    F --> G[Subtitles burned<br/>into the video]
+    G --> H[Download video,<br/>.srt or .vtt]
+    G --> I[Optional: fix words<br/>in the editor]
+    I -- Save and update video --> G
+```
+
+### 1. Upload a video
+
+On the home page, choose a video (or drag it in) and click **Add subtitles**.
+
+- **Spoken language:** leave it on *Detect automatically*, or pick the language to make transcription a little faster and more reliable.
+- **Your text (optional):** leave it empty for automatic transcription, or attach:
+  - a **`.txt`** with what is said in the video. No timestamps are needed. Each line of the file starts a new subtitle, and long lines are split automatically. Your exact words, spelling and punctuation are kept.
+  - a **`.srt`** or **`.vtt`** that already has timings. It is used as it is, without transcribing.
+
+The video appears under **Your videos** with its progress: *Waiting*, *Transcribing* (or *Matching your text to the speech*), *Adding the subtitles to the video*, and then the number of subtitles.
+
+### 2. Review and fix the subtitles (optional)
+
+Click **Edit** next to a video to open the editor:
+
+- The left side plays the **original** video with your **current edits** shown as subtitles, so you see changes right away.
+- The right side lists every subtitle with its **text**, **start** and **end** time in seconds.
+  - Fix any word that was transcribed badly.
+  - Click a time to jump the video there; the subtitle being shown is highlighted.
+  - **Remove** a subtitle, or **Add subtitle at current time**.
+- **Save** stores your changes. The `.srt` and `.vtt` downloads use them immediately.
+- **Save and update video** also remakes the video with the corrected subtitles. The previous video stays downloadable until the new one is ready.
+
+If you try to leave the editor with unsaved changes, the page asks first.
+
+### 3. Download
+
+From the editor: **Download video** (subtitles burned in), **.srt** or **.vtt**.
+
+### 4. Everything stays saved
+
+Every upload lives in its own folder under `data/` (see [Where files are stored](#where-files-are-stored)). It survives restarts of the app or of Docker. Click **Delete** in the list to remove a video and all its files.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph Browser
+        UI["index.html<br/>(HTML + CSS + plain JavaScript)"]
+    end
+
+    subgraph Container["Docker container (python:3.11-slim)"]
+        API["FastAPI app<br/>app/main.py<br/>served by Uvicorn"]
+        Worker["Background worker thread<br/>(one job at a time)"]
+        Core["app/subtitles.py<br/>transcribe · align · parse · SRT/VTT · burn"]
+        Whisper["faster-whisper<br/>(Whisper model, CPU, int8)"]
+        FFmpeg["ffmpeg + libass"]
+    end
+
+    Data[("data/ folder<br/>one folder per video:<br/>video, subtitles, job status")]
+    Models[("Docker volume<br/>Whisper model cache")]
+
+    UI -- "HTTP / JSON<br/>upload, poll status, edit, download" --> API
+    API -- start job --> Worker
+    Worker --> Core
+    Core --> Whisper
+    Core --> FFmpeg
+    API <--> Data
+    Worker <--> Data
+    Whisper <--> Models
+```
+
+### What happens during an upload
+
+```mermaid
+sequenceDiagram
+    actor U as You
+    participant B as Browser (index.html)
+    participant A as FastAPI (main.py)
+    participant W as Worker thread
+    participant S as subtitles.py
+    participant D as data/ folder
+
+    U->>B: Choose video (+ optional .txt / .srt)
+    B->>A: POST /api/jobs (upload)
+    A->>D: Save input video, text file, job.json (queued)
+    A-->>B: Job id
+    A->>W: Start background job
+    loop every 2 seconds
+        B->>A: GET /api/jobs
+        A-->>B: Status (queued, transcribing, burning, done)
+    end
+    W->>S: Transcribe, align text or read subtitle file
+    S-->>W: Subtitles (start, end, text)
+    W->>D: cues.json, subtitles.srt, subtitles.vtt
+    W->>S: Burn subtitles with ffmpeg
+    S->>D: output.mp4
+    W->>D: job.json (done)
+    U->>B: Edit, fix words, Save and update video
+    B->>A: PUT /api/jobs/{id}/cues?burn=true
+    A->>D: New cues.json, .srt, .vtt
+    A->>W: Remake the video
+    W->>D: New output.mp4
+    U->>B: Download
+    B->>A: GET /api/jobs/{id}/video
+    A-->>B: Subtitled video
+```
+
+The app has three parts.
+
+### Frontend: `app/static/index.html`
+
+One single HTML file with inline CSS and **plain JavaScript** (no framework such as React, and no build step). It is served by the same Python server as the API.
+
+- **Home view:** upload form and the list of saved videos. While a video is being processed, it asks the server for the status every 2 seconds (polling).
+- **Editor view** (`#/video/<id>`): an HTML5 `<video>` player plus an editable list of subtitles. The preview subtitles are a WebVTT track generated in the browser from your unsaved edits.
+- It talks to the backend with `fetch` / `XMLHttpRequest` (the upload uses `XMLHttpRequest` to show upload progress).
+- It follows the system light or dark mode and works on phone-sized screens.
+
+### Backend: `app/main.py`
+
+A **FastAPI** application run by the **Uvicorn** web server.
+
+- Exposes the [HTTP API](#http-api) and serves the frontend.
+- Saves each upload to `data/<job id>/` and starts a **background thread** to process it, so the upload returns right away.
+- A lock makes sure only **one video is processed at a time**, because Whisper and ffmpeg each already use all CPU cores. Other uploads wait in the *queued* state.
+- Job status is stored in `job.json` on disk (not in memory), so the list of videos survives restarts. If the server stops while a job is running, that job is marked as failed on the next start.
+
+### Processing: `app/subtitles.py`
+
+All the subtitle logic, independent of the web layer:
+
+| Function | What it does |
+|---|---|
+| `transcribe()` | Runs Whisper with word-level timestamps and turns the words into subtitles. |
+| `align_text()` | Times your own `.txt` against the speech (see below). |
+| `parse_subtitle_file()` | Reads `.srt` and `.vtt` files. |
+| `group_words()` | Groups timed words into readable subtitles. |
+| `to_srt()` / `to_vtt()` | Write the subtitle files. |
+| `burn_subtitles()` | Calls ffmpeg to draw the subtitles onto the video. |
+
+---
+
+## Technology stack
+
+| Piece | Technology | Why |
 |---|---|---|
-| `WHISPER_MODEL` | `small` | Model size: `tiny`, `base`, `small`, `medium`, `large-v3`. Bigger is more accurate but slower. |
+| Language | **Python 3.11** | Whisper and the web server are Python. |
+| Web framework | **FastAPI** | Small, fast, typed request validation, automatic API docs at `/docs`. |
+| Web server | **Uvicorn** | Standard server for FastAPI. |
+| File uploads | **python-multipart** | Lets FastAPI receive uploaded files. |
+| Speech recognition | **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** | Open-source re-implementation of OpenAI's Whisper. Runs locally, about 4× faster than the original, with no API key. Models are downloaded for free from Hugging Face. |
+| Video processing | **ffmpeg** with **libass** | Industry-standard tool. Draws the subtitles onto the frames and re-encodes the video as H.264, keeping the original audio. |
+| Font | **DejaVu Sans** | Supports accents and most alphabets for the burned-in subtitles. |
+| Frontend | **HTML + CSS + JavaScript** | One file, no framework and no build tools, easy to change. |
+| Packaging | **Docker** + **Docker Compose** | Bundles Python, ffmpeg and all libraries, so it runs the same everywhere. |
 
-## Using your own text
+Python dependencies are listed in `requirements.txt`.
 
-Next to the video you can upload the text yourself:
+---
 
-- **.txt** with what is said in the video. Whisper still listens to the audio, but only to find *when* each word is said; the subtitles use your exact words, spelling and punctuation. Each line of the file starts a new subtitle, and long lines are split.
-- **.srt** or **.vtt** that already has timings. It is used as it is, without transcribing.
+## Project structure
 
-## Fixing subtitles
+```
+subtitles/
+├── app/
+│   ├── __init__.py
+│   ├── main.py            # FastAPI app: HTTP API, job storage, background worker
+│   ├── subtitles.py       # Transcription, text alignment, SRT/VTT, burning with ffmpeg
+│   └── static/
+│       └── index.html     # The whole frontend (upload, video list, editor)
+├── data/                  # Created at runtime: one folder per uploaded video (not in git)
+├── Dockerfile             # How the image is built
+├── docker-compose.yml     # How the container is run (port, volumes, settings)
+├── .dockerignore          # Files left out of the image
+├── .gitignore
+├── requirements.txt       # Python libraries
+└── README.md
+```
 
-Every video you upload is saved, together with its subtitles, under **Your videos** on the home page. Click **Edit** to open the editor:
+### The Docker files
 
-- Fix any badly transcribed word, change start and end times, remove or add subtitles. The preview shows your changes right away.
-- **Save** keeps your changes (the .srt and .vtt downloads use them immediately).
-- **Save and update video** also remakes the video with the corrected subtitles.
+**`Dockerfile`** is the recipe for the image:
 
-With Docker, everything is kept in the `data/` folder next to `docker-compose.yml`, so it survives restarts.
+1. Start from `python:3.11-slim` (a small Debian Linux with Python).
+2. Install `ffmpeg` and the DejaVu font with `apt-get`.
+3. Install the Python libraries from `requirements.txt`.
+4. Copy the `app/` folder in.
+5. Start Uvicorn on port 8000.
 
-## How it works
+**`docker-compose.yml`** says how to run it:
 
-1. `POST /api/jobs` saves the upload under `data/<job id>/` and starts processing in the background.
-2. `app/subtitles.py` transcribes the audio and splits it into short cues (max 42 characters or 6 seconds). They are saved in `cues.json`, which is what the editor changes, and exported as `subtitles.srt` and `subtitles.vtt`.
-3. ffmpeg renders the subtitles onto the video as `output.mp4`.
-4. `PUT /api/jobs/<id>/cues` saves edited subtitles; add `?burn=true` to also remake the video.
+- maps port `8000` of the container to port `8000` of your computer;
+- mounts `./data` into the container, so your videos are stored in the project folder on your computer;
+- keeps the downloaded Whisper model in a named volume (`models`), so it isn't downloaded again;
+- sets `WHISPER_MODEL`.
+
+---
+
+## How the processing works
+
+### Automatic transcription
+
+1. faster-whisper reads the audio straight from the video file. Voice activity detection skips silent parts.
+2. It returns the text **with a start and end time for every word**.
+3. `group_words()` builds subtitles from those words. A subtitle ends:
+   - at the end of a sentence (`.`, `?`, `!`),
+   - when it would be longer than **42 characters**, or
+   - when it would last longer than **6 seconds**.
+
+### Your own text (`.txt`)
+
+This is called *forced alignment*. The goal is to use **your words** with **Whisper's timing**.
+
+1. Whisper transcribes the audio with word timestamps, exactly as above.
+2. Both your text and Whisper's words are normalised (lower case, punctuation removed).
+3. Python's `difflib.SequenceMatcher` finds the longest matching runs of words between the two lists, so each of your words that Whisper also heard gets that word's start and end time.
+4. Words Whisper misheard or missed get times spread evenly between the matched words before and after them.
+5. Subtitles are built with `group_words()`, which also starts a new subtitle at **every line break in your file**.
+6. If fewer than 1 in 5 of your words can be matched, the job fails with a clear message, because the text probably belongs to a different video or language.
+
+### Ready-made `.srt` / `.vtt`
+
+The file is parsed directly (timings, multi-line text, VTT cue settings and tags such as `<i>` are handled) and no transcription runs.
+
+### Burning the subtitles into the video
+
+ffmpeg's `subtitles` filter (based on libass) draws the subtitles onto every frame:
+
+```
+ffmpeg -i input.mp4 -vf "subtitles=subtitles.srt:force_style='FontSize=22,Outline=2,Shadow=0,MarginV=24'" \
+       -c:v libx264 -preset veryfast -crf 20 -c:a copy output.mp4
+```
+
+- Video is re-encoded as H.264 (`crf 20` is good quality); the audio is copied unchanged.
+- ffmpeg writes to a temporary file first, which then replaces `output.mp4`. This means the previous version stays downloadable until the new one is complete.
+
+### Job states
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: upload
+    queued --> transcribing
+    transcribing --> burning: subtitles saved
+    burning --> done
+    transcribing --> error
+    burning --> error
+    done --> queued: Save and update video
+    error --> queued: Save and update video (if subtitles exist)
+```
+
+---
+
+## Where files are stored
+
+Every upload gets a random id and its own folder:
+
+```
+data/
+└── 42feb3a14fe04df194d6b2fde4daa48a/
+    ├── input.mp4        # the original upload, never changed
+    ├── text.txt         # only if you uploaded a text (.txt, .srt or .vtt)
+    ├── cues.json        # the subtitles: the "source of truth" the editor changes
+    ├── subtitles.srt    # generated from cues.json
+    ├── subtitles.vtt    # generated from cues.json
+    ├── output.mp4       # the video with subtitles burned in
+    └── job.json         # status, file name, language, dates, errors
+```
+
+`cues.json` looks like this:
+
+```json
+[
+  { "start": 0.5, "end": 2.6, "text": "Hello everyone, this is a test of the" },
+  { "start": 2.6, "end": 3.5, "text": "subtitle app." }
+]
+```
+
+To back up your work, copy the `data/` folder. To free space, delete videos from the app (or delete their folders).
+
+---
+
+## HTTP API
+
+The frontend uses these endpoints. FastAPI also shows interactive documentation at <http://localhost:8000/docs>.
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/api/jobs` | List all saved videos, newest first. |
+| `POST` | `/api/jobs` | Upload a video. Form fields: `file` (video, required), `text` (`.txt`/`.srt`/`.vtt`, optional), `language` (e.g. `es`, optional). |
+| `GET` | `/api/jobs/{id}` | Status of one video. |
+| `DELETE` | `/api/jobs/{id}` | Delete a video and all its files. |
+| `GET` | `/api/jobs/{id}/cues` | The subtitles as JSON. |
+| `PUT` | `/api/jobs/{id}/cues` | Save edited subtitles (JSON list). Add `?burn=true` to also remake the video. |
+| `GET` | `/api/jobs/{id}/source` | The original video (used by the editor preview). |
+| `GET` | `/api/jobs/{id}/video` | Download the subtitled video. |
+| `GET` | `/api/jobs/{id}/srt` | Download the `.srt`. |
+| `GET` | `/api/jobs/{id}/vtt` | Download the `.vtt`. |
+
+Example with `curl`:
+
+```bash
+curl -F "file=@my-video.mp4" -F "text=@script.txt" -F "language=es" http://localhost:8000/api/jobs
+```
+
+---
+
+## Configuration
+
+| Setting | Where | Default | What it does |
+|---|---|---|---|
+| `WHISPER_MODEL` | `docker-compose.yml` (or environment variable) | `small` | Model size. See the table below. |
+| Port | `docker-compose.yml`, `ports` | `8000` | Change the left number to use another port, e.g. `"9000:8000"`. |
+| Subtitle length | `MAX_CHARS`, `MAX_DURATION` in `app/subtitles.py` | 42 chars, 6 s | When a subtitle is split. |
+| Subtitle style | `style` in `burn_subtitles()` in `app/subtitles.py` | size 22, outline 2 | Font size, outline, distance from the bottom. |
+
+Whisper model sizes (download size; speed is for CPU):
+
+| Model | Size | Speed | Accuracy |
+|---|---|---|---|
+| `tiny` | ~75 MB | fastest | lowest |
+| `base` | ~150 MB | fast | fair |
+| `small` | ~500 MB | medium | good (default) |
+| `medium` | ~1.5 GB | slow | very good |
+| `large-v3` | ~3 GB | slowest | best |
+
+After changing the model, run `docker compose up --build` again.
+
+---
+
+## Limitations
+
+- **No user accounts or login.** Everyone who can open the page sees, edits and can delete every video. That's fine on your own computer; read the deployment section before putting it online.
+- **One video at a time.** Other uploads wait in the queue.
+- **CPU only in the Docker image.** On a normal laptop, the `small` model takes roughly as long as the video itself, or a bit less. A GPU would be much faster (see below).
+- **Uploads go fully into memory/disk on the server.** Very large videos (several GB) work but take a while to upload.
+- **Burned-in subtitles can't be turned off** by the viewer. Use the `.srt`/`.vtt` files when you need switchable subtitles (YouTube, video players, editing software).
+
+---
+
+## Next steps: deployment
+
+Right now the app runs on your own computer. These are the options to make it available to others, from simplest to most complete.
+
+### Option A: share the image on Docker Hub
+
+Other people can run the app without the source code and without building it. They still need Docker on their own computer.
+
+1. Create a free account at <https://hub.docker.com>.
+2. Build and upload the image:
+
+   ```bash
+   docker login
+   docker build -t YOUR-DOCKERHUB-USER/subtitles:1.0 .
+   docker push YOUR-DOCKERHUB-USER/subtitles:1.0
+   ```
+
+3. Anyone can then run it with:
+
+   ```bash
+   docker run -p 8000:8000 -v subtitles-data:/app/data -v subtitles-models:/root/.cache/huggingface YOUR-DOCKERHUB-USER/subtitles:1.0
+   ```
+
+Notes:
+
+- A public repository on Docker Hub is visible to everyone. Choose *private* if the code shouldn't be shared (the free plan includes one private repository).
+- If someone uses a Mac with Apple Silicon, build for both processors: `docker buildx build --platform linux/amd64,linux/arm64 -t YOUR-DOCKERHUB-USER/subtitles:1.0 --push .`
+
+### Option B: publish automatically to GitHub Container Registry
+
+Same idea as Docker Hub, but the image is built by GitHub on every push and stored next to the code at `ghcr.io/pepepapapipi/subtitles`. It's free for public repositories.
+
+Add `.github/workflows/docker.yml`:
+
+```yaml
+name: Publish Docker image
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ghcr.io/${{ github.repository }}:latest
+```
+
+Then run it anywhere with `docker run -p 8000:8000 ghcr.io/pepepapapipi/subtitles:latest`.
+
+### Option C: host it online on Hugging Face Spaces
+
+People just open a web link; they install nothing. Hugging Face Spaces can run any Docker app.
+
+What needs to change:
+
+1. **Create a Space** at <https://huggingface.co/new-space>, choose **Docker** as the SDK, and choose **Private** visibility if the videos are confidential (a public Space can be used by anyone on the internet).
+2. **Add a header to the top of this README** (Spaces reads its settings from it):
+
+   ```yaml
+   ---
+   title: Subtitles
+   sdk: docker
+   app_port: 8000
+   ---
+   ```
+
+3. **Make the folders writable.** Spaces run the container as a normal user (id 1000), not as root. Add to the `Dockerfile`, before `CMD`:
+
+   ```dockerfile
+   RUN useradd -m -u 1000 user && mkdir -p /app/data && chown -R user /app
+   USER user
+   ENV HF_HOME=/home/user/.cache/huggingface
+   ```
+
+4. **Push the code** to the Space's git repository (or link it to this GitHub repo).
+
+Things to know:
+
+- The free **CPU basic** hardware (2 vCPU, 16 GB RAM) works but is slow; use the `base` or `small` model. A paid GPU (from about $0.40/hour) makes transcription many times faster.
+- **Storage is temporary on the free tier.** `data/` is wiped when the Space restarts or goes to sleep after inactivity. For permanent storage, enable the paid *Persistent storage* option and point the data folder to `/data`.
+- Uploads are limited in size by Spaces, so very long videos may not work.
+
+### Option D: your own server or cloud
+
+Any Linux server or cloud VM with Docker (company server, AWS, Azure, Google Cloud, Hetzner, DigitalOcean…) can run it with `docker compose up -d`. Recommended: at least 2 CPUs and 4 GB of RAM, or a GPU for speed. Put it behind a reverse proxy (Caddy or Nginx) to get HTTPS.
+
+### What to add before real online use
+
+Whichever option you pick, if the app will be reachable by people other than you:
+
+| Need | Why | How |
+|---|---|---|
+| **Login** | Without it anyone with the link sees and deletes all videos. | Simplest: a shared password (HTTP Basic Auth in FastAPI or at the reverse proxy). Better: company login (Microsoft/Google SSO). |
+| **Per-user video lists** | So colleagues only see their own videos. | Store the owner in `job.json` and filter the list. |
+| **Upload size limit** | Protects the server's disk. | Check the size in `create_job`, or set it in the reverse proxy. |
+| **Automatic clean-up** | Videos take a lot of space. | Delete jobs older than N days on start-up or with a scheduled task. |
+| **GPU support** | Much faster transcription. | Build from an `nvidia/cuda` base image with cuDNN and run with `--gpus all`; faster-whisper uses the GPU automatically. |
+| **Job queue** | Process several videos in parallel across machines. | Replace the background thread with a queue such as Celery or RQ with Redis. |
+| **Company data rules** | Work videos may be confidential. | Check with IT where videos may be stored; prefer a private Space or a company server. |
+
+---
+
+## Other ideas for later
+
+- Translate subtitles into other languages.
+- Choose the subtitle style (font, size, colour, position) from the page.
+- Split or merge subtitles in the editor, and drag their timing on a waveform.
+- Export only the subtitles without re-encoding the video (soft subtitles inside an `.mp4` or `.mkv`).
+- Show a progress percentage while transcribing and burning.
