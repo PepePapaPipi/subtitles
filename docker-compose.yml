@@ -1,0 +1,15 @@
+services:
+  subtitles:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - WHISPER_MODEL=small
+    volumes:
+      # Keep the downloaded Whisper model between restarts.
+      - models:/root/.cache/huggingface
+      # Uploaded videos and results.
+      - ./data:/app/data
+
+volumes:
+  models:
