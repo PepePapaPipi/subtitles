@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subtitles</title>
+  <style>
+    :root { --bg: #f6f6f4; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --accent: #2b59c3; --border: #e2e2dd; --error: #b3261e; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #161615; --card: #20201e; --text: #ececea; --muted: #a0a09a; --accent: #7aa2ff; --border: #34342f; --error: #ff8a80; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 720px; margin: 0 auto; padding: 40px 16px; }
+    h1 { margin: 0 0 4px; font-size: 28px; }
+    p.lead { margin: 0 0 24px; color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+    .drop { display: block; border: 2px dashed var(--border); border-radius: 10px; padding: 32px 16px; text-align: center; cursor: pointer; color: var(--muted); }
+    .drop.over { border-color: var(--accent); color: var(--accent); }
+    .drop strong { color: var(--text); }
+    input[type=file] { display: none; }
+    .row { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+    select, button, a.button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+    button.primary, a.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button:disabled { opacity: .5; cursor: default; }
+    a.button { text-decoration: none; display: inline-block; }
+    #status { margin-top: 16px; color: var(--muted); min-height: 1.5em; }
+    #status.error { color: var(--error); white-space: pre-wrap; }
+    video { width: 100%; margin-top: 16px; border-radius: 8px; background: #000; }
+    #result[hidden] { display: none; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Subtitles</h1>
+  <p class="lead">Upload a video. It is transcribed automatically and you get it back with subtitles.</p>
+
+  <div class="card">
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="video/*">
+      <span id="drop-text"><strong>Choose a video</strong> or drop it here</span>
+    </label>
+    <div class="row">
+      <label for="language">Spoken language</label>
+      <select id="language">
+        <option value="">Detect automatically</option>
+        <option value="en">English</option>
+        <option value="es">Spanish</option>
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="it">Italian</option>
+        <option value="pt">Portuguese</option>
+      </select>
+      <button class="primary" id="start" disabled>Add subtitles</button>
+    </div>
+    <div id="status"></div>
+
+    <div id="result" hidden>
+      <video id="preview" controls></video>
+      <div class="row">
+        <a class="button primary" id="dl-video">Download video</a>
+        <a class="button" id="dl-srt">Download .srt</a>
+        <a class="button" id="dl-vtt">Download .vtt</a>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const fileInput = $("file"), drop = $("drop"), start = $("start"), statusEl = $("status");
+  let file = null;
+
+  function pick(f) {
+    file = f;
+    $("drop-text").innerHTML = f ? `<strong>${f.name.replace(/</g, "&lt;")}</strong>` : "<strong>Choose a video</strong> or drop it here";
+    start.disabled = !f;
+  }
+  fileInput.addEventListener("change", () => pick(fileInput.files[0]));
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); pick(e.dataTransfer.files[0]); });
+
+  function setStatus(text, isError = false) {
+    statusEl.textContent = text;
+    statusEl.className = isError ? "error" : "";
+  }
+
+  const LABELS = {
+    queued: "Waiting to start…",
+    transcribing: "Transcribing the audio… this can take a few minutes for long videos.",
+    burning: "Adding the subtitles to the video…",
+  };
+
+  start.addEventListener("click", () => {
+    start.disabled = true;
+    $("result").hidden = true;
+    const form = new FormData();
+    form.append("file", file);
+    form.append("language", $("language").value);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/jobs");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) setStatus(`Uploading… ${Math.round(e.loaded / e.total * 100)}%`);
+    };
+    xhr.onload = () => {
+      if (xhr.status !== 200) { setStatus("Upload failed.", true); start.disabled = false; return; }
+      poll(JSON.parse(xhr.responseText).id);
+    };
+    xhr.onerror = () => { setStatus("Upload failed.", true); start.disabled = false; };
+    xhr.send(form);
+  });
+
+  async function poll(id) {
+    const job = await (await fetch(`/api/jobs/${id}`)).json();
+    if (job.status === "done") {
+      setStatus(`Done. ${job.cues} subtitles, language: ${job.language}.`);
+      const base = `/api/jobs/${id}`;
+      $("preview").src = `${base}/video`;
+      $("dl-video").href = `${base}/video`;
+      $("dl-srt").href = `${base}/srt`;
+      $("dl-vtt").href = `${base}/vtt`;
+      $("result").hidden = false;
+      start.disabled = false;
+    } else if (job.status === "error") {
+      setStatus(`Something went wrong: ${job.error}`, true);
+      start.disabled = false;
+    } else {
+      setStatus(LABELS[job.status] || job.status);
+      setTimeout(() => poll(id), 1500);
+    }
+  }
+</script>
+</body>
+</html>
