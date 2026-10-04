@@ -5,14 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Subtitles</title>
   <style>
-    :root { --bg: #f6f6f4; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --accent: #2b59c3; --border: #e2e2dd; --error: #b3261e; }
+    :root { --bg: #f6f6f4; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --accent: #2b59c3; --accent-soft: #e8eefb; --border: #e2e2dd; --error: #b3261e; }
     @media (prefers-color-scheme: dark) {
-      :root { --bg: #161615; --card: #20201e; --text: #ececea; --muted: #a0a09a; --accent: #7aa2ff; --border: #34342f; --error: #ff8a80; }
+      :root { --bg: #161615; --card: #20201e; --text: #ececea; --muted: #a0a09a; --accent: #7aa2ff; --accent-soft: #263150; --border: #34342f; --error: #ff8a80; }
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, sans-serif; }
-    main { max-width: 720px; margin: 0 auto; padding: 40px 16px; }
+    main { max-width: 960px; margin: 0 auto; padding: 32px 16px 64px; }
     h1 { margin: 0 0 4px; font-size: 28px; }
+    h1 a { color: inherit; text-decoration: none; }
+    h2 { font-size: 18px; margin: 32px 0 12px; }
     p.lead { margin: 0 0 24px; color: var(--muted); }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
     .drop { display: block; border: 2px dashed var(--border); border-radius: 10px; padding: 32px 16px; text-align: center; cursor: pointer; color: var(--muted); }
@@ -20,60 +22,152 @@
     .drop strong { color: var(--text); }
     input[type=file] { display: none; }
     .row { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
-    select, button, a.button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+    select, button, a.button, input[type=text], input[type=number] { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+    button, a.button { cursor: pointer; }
     button.primary, a.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button:disabled { opacity: .5; cursor: default; }
     a.button { text-decoration: none; display: inline-block; }
-    #status { margin-top: 16px; color: var(--muted); min-height: 1.5em; }
-    #status.error { color: var(--error); white-space: pre-wrap; }
-    video { width: 100%; margin-top: 16px; border-radius: 8px; background: #000; }
-    #result[hidden] { display: none; }
+    .status { margin-top: 16px; color: var(--muted); min-height: 1.5em; }
+    .status.error { color: var(--error); white-space: pre-wrap; }
+    video { width: 100%; border-radius: 8px; background: #000; display: block; }
+    [hidden] { display: none !important; }
+
+    .jobs { list-style: none; margin: 0; padding: 0; }
+    .jobs li { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--border); }
+    .jobs li:first-child { border-top: 0; }
+    .jobs .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .jobs .meta { color: var(--muted); font-size: 14px; }
+
+    .editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+    .editor .player { position: sticky; top: 16px; }
+    @media (max-width: 760px) { .editor { grid-template-columns: 1fr; } .editor .player { position: static; } }
+    .cues { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; padding-right: 4px; }
+    .cue { display: grid; grid-template-columns: auto auto 1fr auto; gap: 6px; align-items: center; padding: 8px; border-radius: 8px; border: 1px solid var(--border); }
+    .cue.active { background: var(--accent-soft); border-color: var(--accent); }
+    .cue input[type=number] { width: 72px; padding: 6px 8px; font-size: 14px; }
+    .cue input[type=text] { width: 100%; padding: 6px 8px; grid-column: 1 / -1; }
+    .cue .arrow { color: var(--muted); font-size: 14px; }
+    .cue button { padding: 6px 10px; font-size: 14px; }
+    .hint { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
+    .dirty { color: var(--accent); font-size: 14px; }
   </style>
 </head>
 <body>
 <main>
-  <h1>Subtitles</h1>
-  <p class="lead">Upload a video. It is transcribed automatically and you get it back with subtitles.</p>
+  <h1><a href="#">Subtitles</a></h1>
+  <p class="lead">Upload a video and get it back with subtitles, transcribed automatically or from your own text. Your subtitles are saved so you can fix any word later.</p>
 
-  <div class="card">
-    <label class="drop" id="drop">
-      <input type="file" id="file" accept="video/*">
-      <span id="drop-text"><strong>Choose a video</strong> or drop it here</span>
-    </label>
-    <div class="row">
-      <label for="language">Spoken language</label>
-      <select id="language">
-        <option value="">Detect automatically</option>
-        <option value="en">English</option>
-        <option value="es">Spanish</option>
-        <option value="fr">French</option>
-        <option value="de">German</option>
-        <option value="it">Italian</option>
-        <option value="pt">Portuguese</option>
-      </select>
-      <button class="primary" id="start" disabled>Add subtitles</button>
-    </div>
-    <div id="status"></div>
-
-    <div id="result" hidden>
-      <video id="preview" controls></video>
+  <!-- Home: upload + saved videos -->
+  <section id="home">
+    <div class="card">
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="video/*">
+        <span id="drop-text"><strong>Choose a video</strong> or drop it here</span>
+      </label>
       <div class="row">
-        <a class="button primary" id="dl-video">Download video</a>
-        <a class="button" id="dl-srt">Download .srt</a>
-        <a class="button" id="dl-vtt">Download .vtt</a>
+        <label for="text">Your text <span class="hint">(optional)</span></label>
+        <input type="file" id="text" accept=".txt,.srt,.vtt,text/plain" style="display:inline-block;max-width:100%">
+        <button id="text-clear" hidden>Clear</button>
+      </div>
+      <p class="hint">Leave this empty to transcribe automatically. A <strong>.txt</strong> with what is said is matched to the speech, one subtitle per line or sentence. A <strong>.srt</strong> or <strong>.vtt</strong> is used as it is.</p>
+      <div class="row">
+        <label for="language">Spoken language</label>
+        <select id="language">
+          <option value="">Detect automatically</option>
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="it">Italian</option>
+          <option value="pt">Portuguese</option>
+        </select>
+        <button class="primary" id="start" disabled>Add subtitles</button>
+      </div>
+      <div class="status" id="upload-status"></div>
+    </div>
+
+    <h2>Your videos</h2>
+    <div class="card">
+      <ul class="jobs" id="jobs"></ul>
+      <p class="hint" id="no-jobs">Nothing here yet.</p>
+    </div>
+  </section>
+
+  <!-- Editor for one video -->
+  <section id="editor-view" hidden>
+    <div class="row" style="margin-top:0;margin-bottom:16px">
+      <a class="button" href="#">← All videos</a>
+      <strong id="ed-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></strong>
+    </div>
+    <div class="editor">
+      <div class="player card">
+        <video id="ed-video" controls crossorigin="anonymous"></video>
+        <p class="hint">Preview of the original video with your current edits. Click a time to jump there.</p>
+        <div class="row">
+          <button id="ed-save">Save</button>
+          <button class="primary" id="ed-burn">Save and update video</button>
+          <span class="dirty" id="ed-dirty" hidden>Unsaved changes</span>
+        </div>
+        <div class="status" id="ed-status"></div>
+        <div class="row" id="ed-downloads">
+          <a class="button" id="dl-video">Download video</a>
+          <a class="button" id="dl-srt">.srt</a>
+          <a class="button" id="dl-vtt">.vtt</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="cues" id="cues"></div>
+        <div class="row"><button id="ed-add">Add subtitle at current time</button></div>
       </div>
     </div>
-  </div>
+  </section>
 </main>
 
 <script>
   const $ = (id) => document.getElementById(id);
-  const fileInput = $("file"), drop = $("drop"), start = $("start"), statusEl = $("status");
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const BUSY = ["queued", "transcribing", "burning"];
+  const LABELS = {
+    queued: "Waiting to start…",
+    transcribing: "Transcribing the audio… this can take a few minutes for long videos.",
+    burning: "Adding the subtitles to the video…",
+    done: "Ready",
+    error: "Failed",
+  };
+
+  function label(job) {
+    if (job.status === "transcribing" && job.source === "your text") return "Matching your text to the speech…";
+    if (job.status === "transcribing" && job.source === "subtitle file") return "Reading your subtitle file…";
+    return LABELS[job.status] || job.status;
+  }
+
+  function setStatus(el, text, isError = false) {
+    el.textContent = text;
+    el.className = "status" + (isError ? " error" : "");
+  }
+
+  // ---------- Routing ----------
+  let currentHash = location.hash;
+  function route() {
+    if (dirty && location.hash !== currentHash && !confirm("You have unsaved changes. Leave without saving?")) {
+      history.replaceState(null, "", currentHash);
+      return;
+    }
+    currentHash = location.hash;
+    const m = location.hash.match(/^#\/video\/([0-9a-f]{32})$/);
+    $("home").hidden = !!m;
+    $("editor-view").hidden = !m;
+    if (m) openEditor(m[1]); else { closeEditor(); loadJobs(); }
+  }
+  window.addEventListener("hashchange", route);
+
+  // ---------- Upload ----------
+  const fileInput = $("file"), drop = $("drop"), start = $("start");
   let file = null;
 
   function pick(f) {
     file = f;
-    $("drop-text").innerHTML = f ? `<strong>${f.name.replace(/</g, "&lt;")}</strong>` : "<strong>Choose a video</strong> or drop it here";
+    $("drop-text").innerHTML = f ? `<strong>${esc(f.name)}</strong>` : "<strong>Choose a video</strong> or drop it here";
     start.disabled = !f;
   }
   fileInput.addEventListener("change", () => pick(fileInput.files[0]));
@@ -81,56 +175,193 @@
   drop.addEventListener("dragleave", () => drop.classList.remove("over"));
   drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); pick(e.dataTransfer.files[0]); });
 
-  function setStatus(text, isError = false) {
-    statusEl.textContent = text;
-    statusEl.className = isError ? "error" : "";
-  }
-
-  const LABELS = {
-    queued: "Waiting to start…",
-    transcribing: "Transcribing the audio… this can take a few minutes for long videos.",
-    burning: "Adding the subtitles to the video…",
-  };
+  $("text").addEventListener("change", () => { $("text-clear").hidden = !$("text").files[0]; });
+  $("text-clear").addEventListener("click", () => { $("text").value = ""; $("text-clear").hidden = true; });
 
   start.addEventListener("click", () => {
     start.disabled = true;
-    $("result").hidden = true;
     const form = new FormData();
     form.append("file", file);
     form.append("language", $("language").value);
-
+    if ($("text").files[0]) form.append("text", $("text").files[0]);
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/jobs");
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) setStatus(`Uploading… ${Math.round(e.loaded / e.total * 100)}%`);
+      if (e.lengthComputable) setStatus($("upload-status"), `Uploading… ${Math.round(e.loaded / e.total * 100)}%`);
     };
     xhr.onload = () => {
-      if (xhr.status !== 200) { setStatus("Upload failed.", true); start.disabled = false; return; }
-      poll(JSON.parse(xhr.responseText).id);
+      start.disabled = false;
+      if (xhr.status !== 200) { setStatus($("upload-status"), "Upload failed.", true); return; }
+      setStatus($("upload-status"), "Uploaded. It's being processed below.");
+      pick(null); fileInput.value = ""; $("text").value = ""; $("text-clear").hidden = true;
+      loadJobs();
     };
-    xhr.onerror = () => { setStatus("Upload failed.", true); start.disabled = false; };
+    xhr.onerror = () => { setStatus($("upload-status"), "Upload failed.", true); start.disabled = false; };
     xhr.send(form);
   });
 
-  async function poll(id) {
-    const job = await (await fetch(`/api/jobs/${id}`)).json();
-    if (job.status === "done") {
-      setStatus(`Done. ${job.cues} subtitles, language: ${job.language}.`);
-      const base = `/api/jobs/${id}`;
-      $("preview").src = `${base}/video`;
-      $("dl-video").href = `${base}/video`;
-      $("dl-srt").href = `${base}/srt`;
-      $("dl-vtt").href = `${base}/vtt`;
-      $("result").hidden = false;
-      start.disabled = false;
+  // ---------- Saved videos ----------
+  let jobsTimer = null;
+  async function loadJobs() {
+    clearTimeout(jobsTimer);
+    const jobs = await (await fetch("/api/jobs")).json();
+    $("no-jobs").hidden = jobs.length > 0;
+    $("jobs").innerHTML = jobs.map((j) => {
+      const busy = BUSY.includes(j.status);
+      const when = new Date(j.created).toLocaleString();
+      const from = j.source && j.source !== "automatic" ? ` · from ${esc(j.source)}` : "";
+      const info = j.status === "done" ? `${j.cues} subtitles${j.language ? " · " + esc(j.language) : ""}${from}${j.edited ? " · edited" : ""}`
+        : j.status === "error" ? `<span style="color:var(--error)">${esc(j.error || "Failed")}</span>`
+        : esc(label(j));
+      return `<li>
+        <div class="name"><div>${esc(j.filename || "video")}</div><div class="meta">${when} · ${info}</div></div>
+        ${j.cues ? `<a class="button primary" href="#/video/${j.id}">Edit</a>` : ""}
+        ${busy ? "" : `<button data-delete="${j.id}" title="Delete">Delete</button>`}
+      </li>`;
+    }).join("");
+    if (jobs.some((j) => BUSY.includes(j.status)) && !$("home").hidden) jobsTimer = setTimeout(loadJobs, 2000);
+  }
+  $("jobs").addEventListener("click", async (e) => {
+    const id = e.target.dataset.delete;
+    if (!id || !confirm("Delete this video and its subtitles?")) return;
+    await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+    loadJobs();
+  });
+
+  // ---------- Editor ----------
+  let jobId = null, cues = [], dirty = false, editorTimer = null, trackUrl = null;
+  const video = $("ed-video");
+
+  function fmt(t) { return Number(t).toFixed(2); }
+
+  function setDirty(value) { dirty = value; $("ed-dirty").hidden = !value; }
+
+  function closeEditor() {
+    clearTimeout(editorTimer);
+    setDirty(false);
+    jobId = null;
+    video.removeAttribute("src"); video.load();
+  }
+
+  async function openEditor(id) {
+    if (jobId === id) return;
+    jobId = id;
+    setDirty(false);
+    const [job, list] = await Promise.all([
+      fetch(`/api/jobs/${id}`).then((r) => r.json()),
+      fetch(`/api/jobs/${id}/cues`).then((r) => r.json()),
+    ]);
+    cues = list;
+    $("ed-name").textContent = job.filename || "video";
+    video.src = `/api/jobs/${id}/source`;
+    renderCues();
+    showJob(job);
+  }
+
+  function renderCues() {
+    $("cues").innerHTML = cues.map((c, i) => `
+      <div class="cue" data-i="${i}">
+        <input type="text" value="${esc(c.text)}" data-field="text">
+        <input type="number" step="0.1" min="0" value="${fmt(c.start)}" data-field="start" title="Start (seconds)">
+        <input type="number" step="0.1" min="0" value="${fmt(c.end)}" data-field="end" title="End (seconds)">
+        <span class="arrow">seconds</span>
+        <button data-remove="${i}" title="Remove this subtitle">Remove</button>
+      </div>`).join("");
+    refreshTrack();
+  }
+
+  // Show the current (unsaved) edits on the preview video.
+  function refreshTrack() {
+    const ts = (t) => new Date(Math.max(0, t) * 1000).toISOString().substring(11, 23);
+    const vtt = "WEBVTT\n\n" + cues.map((c) => `${ts(c.start)} --> ${ts(c.end)}\n${c.text}\n`).join("\n");
+    if (trackUrl) URL.revokeObjectURL(trackUrl);
+    trackUrl = URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }));
+    video.querySelectorAll("track").forEach((t) => t.remove());
+    const track = document.createElement("track");
+    track.kind = "subtitles"; track.label = "Subtitles"; track.default = true; track.src = trackUrl;
+    video.appendChild(track);
+    track.addEventListener("load", () => { track.track.mode = "showing"; });
+  }
+
+  $("cues").addEventListener("input", (e) => {
+    const row = e.target.closest(".cue"), field = e.target.dataset.field;
+    if (!row || !field) return;
+    const c = cues[row.dataset.i];
+    c[field] = field === "text" ? e.target.value : parseFloat(e.target.value) || 0;
+    setDirty(true);
+    refreshTrack();
+  });
+  $("cues").addEventListener("click", (e) => {
+    if (e.target.dataset.remove !== undefined) {
+      cues.splice(Number(e.target.dataset.remove), 1);
+      setDirty(true); renderCues(); return;
+    }
+    const row = e.target.closest(".cue");
+    if (row && e.target.type === "number") video.currentTime = cues[row.dataset.i].start;
+  });
+  $("cues").addEventListener("focusin", (e) => {
+    const row = e.target.closest(".cue");
+    if (row && e.target.type === "text" && video.paused) video.currentTime = cues[row.dataset.i].start;
+  });
+  video.addEventListener("timeupdate", () => {
+    const t = video.currentTime;
+    document.querySelectorAll(".cue").forEach((row) => {
+      const c = cues[row.dataset.i];
+      row.classList.toggle("active", t >= c.start && t < c.end);
+    });
+  });
+  $("ed-add").addEventListener("click", () => {
+    const t = video.currentTime || 0;
+    cues.push({ start: t, end: t + 2, text: "" });
+    cues.sort((a, b) => a.start - b.start);
+    setDirty(true); renderCues();
+    const i = cues.findIndex((c) => c.start === t && c.text === "");
+    document.querySelector(`.cue[data-i="${i}"] input[type=text]`)?.focus();
+  });
+
+  async function save(burn) {
+    $("ed-save").disabled = $("ed-burn").disabled = true;
+    setStatus($("ed-status"), "Saving…");
+    const res = await fetch(`/api/jobs/${jobId}/cues${burn ? "?burn=true" : ""}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cues),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setStatus($("ed-status"), body.detail?.[0]?.msg || body.detail || "Could not save.", true);
+      $("ed-save").disabled = $("ed-burn").disabled = false;
+      return;
+    }
+    setDirty(false);
+    cues = await (await fetch(`/api/jobs/${jobId}/cues`)).json();
+    renderCues();
+    showJob(body, burn ? null : "Saved. Click “Save and update video” to remake the video with your changes.");
+  }
+  $("ed-save").addEventListener("click", () => save(false));
+  $("ed-burn").addEventListener("click", () => save(true));
+
+  function showJob(job, message) {
+    clearTimeout(editorTimer);
+    const busy = BUSY.includes(job.status);
+    $("ed-save").disabled = $("ed-burn").disabled = busy;
+    const base = `/api/jobs/${job.id}`, bust = `?v=${encodeURIComponent(job.updated || "")}`;
+    $("dl-video").href = `${base}/video${bust}`;
+    $("dl-srt").href = `${base}/srt${bust}`;
+    $("dl-vtt").href = `${base}/vtt${bust}`;
+    $("dl-video").hidden = job.status !== "done";
+    if (busy) {
+      setStatus($("ed-status"), label(job));
+      editorTimer = setTimeout(async () => {
+        if (jobId === job.id) showJob(await (await fetch(base)).json(), "The video is updated with your changes.");
+      }, 1500);
     } else if (job.status === "error") {
-      setStatus(`Something went wrong: ${job.error}`, true);
-      start.disabled = false;
+      setStatus($("ed-status"), job.error || "Something went wrong.", true);
     } else {
-      setStatus(LABELS[job.status] || job.status);
-      setTimeout(() => poll(id), 1500);
+      setStatus($("ed-status"), message || "");
     }
   }
+
+  window.addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
+  route();
 </script>
 </body>
 </html>

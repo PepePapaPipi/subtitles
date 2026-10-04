@@ -40,9 +40,26 @@ The first run downloads the Whisper model (about 500 MB for `small`).
 |---|---|---|
 | `WHISPER_MODEL` | `small` | Model size: `tiny`, `base`, `small`, `medium`, `large-v3`. Bigger is more accurate but slower. |
 
+## Using your own text
+
+Next to the video you can upload the text yourself:
+
+- **.txt** with what is said in the video. Whisper still listens to the audio, but only to find *when* each word is said; the subtitles use your exact words, spelling and punctuation. Each line of the file starts a new subtitle, and long lines are split.
+- **.srt** or **.vtt** that already has timings. It is used as it is, without transcribing.
+
+## Fixing subtitles
+
+Every video you upload is saved, together with its subtitles, under **Your videos** on the home page. Click **Edit** to open the editor:
+
+- Fix any badly transcribed word, change start and end times, remove or add subtitles. The preview shows your changes right away.
+- **Save** keeps your changes (the .srt and .vtt downloads use them immediately).
+- **Save and update video** also remakes the video with the corrected subtitles.
+
+With Docker, everything is kept in the `data/` folder next to `docker-compose.yml`, so it survives restarts.
+
 ## How it works
 
 1. `POST /api/jobs` saves the upload under `data/<job id>/` and starts processing in the background.
-2. `app/subtitles.py` transcribes the audio, splits it into short cues (max 42 characters or 6 seconds) and writes `subtitles.srt` and `subtitles.vtt`.
+2. `app/subtitles.py` transcribes the audio and splits it into short cues (max 42 characters or 6 seconds). They are saved in `cues.json`, which is what the editor changes, and exported as `subtitles.srt` and `subtitles.vtt`.
 3. ffmpeg renders the subtitles onto the video as `output.mp4`.
-4. The page polls `GET /api/jobs/<id>` and shows download links when it is done.
+4. `PUT /api/jobs/<id>/cues` saves edited subtitles; add `?burn=true` to also remake the video.
